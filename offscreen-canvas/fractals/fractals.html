@@ -1,0 +1,419 @@
+<html>
+<head>
+  <title>OffscreenCanvas fractal demo</title>
+  <script src="mandelbrot.js" type="text/javascript"></script>
+  <style>
+    html, body {
+      margin: 0;
+    }
+    
+    canvas {
+      width: 100%;
+      height: 100%;
+    }
+    
+    #controls {
+      position: fixed;
+      bottom: 0;
+      right: 0;
+      background-color: rgba(0, 0, 0, 0.5);
+      color: white;
+      text-align: center;
+      margin: 0 3em 2em 0;
+      padding: 1em;
+      border-radius: 0.5em;
+    }
+    
+    #controls > div {
+      margin-bottom: 1em;
+    }
+    
+    #controls > div:last-child {
+      margin-bottom: 0;
+    }
+    
+    #controls button, #controls input {
+      margin-top: 0.5em;
+    }
+    
+    #worker-controls.disabled {
+      opacity: 0.5;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="output"></canvas>
+  <div id="controls">
+    <div id="worker-controls">
+      Rendering threads<br />
+      <input type="number" name="workers" id="workers" min="0" max="64" step="1" value="0" onchange="refreshWorkerPool();" />
+    </div>
+    <div>
+      Resolution<br />
+      <input type="range" id="res" list="resolutions" min="1" max="8" step="1" value="1" oninput="resChange();">
+      <datalist id="resolutions">
+        <option value="1" label="1/1"></option>
+        <option value="2" label="1/2"></option>
+        <option value="3" label="1/3"></option>
+        <option value="4" label="1/4"></option>
+        <option value="5" label="1/5"></option>
+        <option value="6" label="1/6"></option>
+        <option value="7" label="1/7"></option>
+        <option value="8" label="1/8"></option>
+      </datalist>
+    </div>
+    <div>
+      Animation<br />
+      <button onclick="start();">Start</button>
+      <button onclick="stop();">Stop</button>
+    </div>
+  </div>
+</body>
+<script>
+  var palette = [];
+  var paletteSize = 1024;
+  
+  var r_range = { "min": 64, "max": 256 };
+  var g_range = { "min": 0, "max": 192 };
+  var b_range = { "min": 0, "max": 96 };
+  
+  var r_i = Math.random() * (r_range.max - r_range.min) + r_range.min;
+  var g_i = Math.random() * (g_range.max - g_range.min) + g_range.min;
+  var b_i = Math.random() * (b_range.max - b_range.min) + b_range.min;
+  
+  for (var i = 0; i < paletteSize; ++i) {
+    palette.push({ "r": Math.floor(r_i), "g": Math.floor(g_i), "b": Math.floor(b_i) });
+    
+    r_i += (r_range.max - r_range.min) / paletteSize;
+    if (r_i >= r_range.max) r_i -= (r_range.max - r_range.min);
+    g_i += (g_range.max - g_range.min) / paletteSize;
+    if (g_i >= g_range.max) g_i -= (g_range.max - g_range.min);
+    b_i += (b_range.max - b_range.min) / paletteSize;
+    if (b_i >= b_range.max) b_i -= (b_range.max - b_range.min);
+  }
+  palette.push({ "r": 0, "g": 0, "b": 0 });
+  
+  function cyclePalette(palette, offset) {
+    var paletteSize = palette.length - 1;
+    return palette.slice(offset, paletteSize).concat(palette.slice(0, offset)).concat(palette[paletteSize]);
+  }
+
+  var canvas = document.getElementById("output");
+  
+  var workers = [];
+  var busyWorkers = [];
+  var workQueue = [];
+  var epoch = 0;
+  var lastEpoch = 0;
+  var resolution = 1;
+  var last_sx, last_sy, last_sw, last_sh, last_width, last_height;
+  function transformAndRenderFractalPatch(image, sx, sy, sw, sh, resolution, tx, ty, tw, th, width, height, clear) {
+        var dx = (sx - last_sx) * width / sw;
+        var dy = (sy - last_sy) * height / sh;
+        
+        var scaleX = sw / last_sw * resolution;
+        var scaleY = sh / last_sh * resolution;
+        
+        dx = (dx + tx) * scaleX;
+        dy = (dy + ty) * scaleY;
+        var dw = tw * scaleX;
+        var dh = th * scaleY;
+        
+        var ctx = canvas.getContext("2d");
+        ctx.drawImage(image, 0, 0, image.width, image.height, dx, dy, dw, dh);
+                      
+        if (clear) {
+            ctx.fillStyle = 'white';
+            ctx.fillRect(0, 0, image.width, dy);
+            ctx.fillRect(0, dy, dx, image.height);
+            ctx.fillRect(dx, dy + dh, dw, image.height - (dy + dh));
+            ctx.fillRect(dx + dw, dy, image.width - (dx + dw), dh);
+        }
+  }
+  
+  var animating = false;
+  
+  function serviceWorkQueue() {
+    if (!workQueue.length)
+      return;
+      
+    if (!workers.length && !busyWorkers.length) {
+      // Legacy/non-worker path
+      var ctx = canvas.getContext("2d");
+      while (workQueue.length) {
+        var job = workQueue.shift();
+        
+        var imageData = ctx.createImageData(job.tw, job.th);
+        renderPatch(ctx, job.sx, job.sy, job.sw, job.sh, job.width, job.height, imageData, job.tx, job.ty, job.iterations, palette);
+        
+        if (job.resolution == 1)
+            ctx.putImageData(imageData, job.tx, job.ty);
+        else {
+            var tmpCanvas = document.createElement("canvas");
+            tmpCanvas.width = imageData.width;
+            tmpCanvas.height = imageData.height;
+            var tmpCtx = tmpCanvas.getContext("2d");
+            tmpCtx.putImageData(imageData, 0, 0);
+            ctx.drawImage(tmpCanvas, job.tx * job.resolution, job.ty * job.resolution, job.tw * job.resolution, job.th * job.resolution);
+        }
+      }
+      
+      return;
+    }
+    
+    while (workers.length) {
+      // Skip old jobs (I don't think this should happen?)
+      while (workQueue[0].epoch < lastEpoch)
+        workQueue.shift();
+        
+      // If we're moving onto a new render, skip any old renders between the last and this one
+      if (workQueue[0].epoch > lastEpoch) {
+        // Wait for a whole render to complete while animating
+        if (animating && busyWorkers.length)
+          return;
+          
+        while (workQueue[0].epoch < workQueue[workQueue.length - 1].epoch)
+          workQueue.shift();
+      }
+      
+      var worker = workers.pop();
+      var job = workQueue.shift();
+      lastEpoch = job.epoch;
+      worker.postMessage(job);
+      busyWorkers.push(worker);
+    }
+  }
+  
+  function renderFractal(canvas, sx, sy, sw, sh, iterations) {
+    var old_sx = last_sx;
+    var old_sy = last_sy;
+    var old_sw = last_sw;
+    var old_sh = last_sh;
+    var old_width = last_width;
+    var old_height = last_height;
+    
+    last_sx = sx;
+    last_sy = sy;
+    last_sw = sw;
+    last_sh = sh;
+    last_width = canvas.width;
+    last_height = canvas.height;
+
+    // Split work into 64 tiles
+    var tileWidth = Math.floor((canvas.width / resolution) / 8);
+    var tileHeight = Math.floor((canvas.height / resolution) / 8);
+    var worker = 0;
+    ++epoch;
+    for (var y = 0; y < 8; ++y) {
+      for (var x = 0; x < 8; ++x) {
+        var tx = x * tileWidth;
+        var ty = y * tileHeight;
+        var tw = (x == 7) ? (canvas.width / resolution) - (tileWidth * 7) : tileWidth;
+        var th = (y == 7) ? (canvas.height / resolution) - (tileHeight * 7) : tileHeight;
+        workQueue.push({ "message": "renderPatch",
+                         "sx": sx,
+                         "sy": sy,
+                         "sw": sw,
+                         "sh": sh,
+                         "iterations": iterations,
+                         "tx": tx,
+                         "ty": ty,
+                         "tw": tw,
+                         "th": th,
+                         "width": canvas.width / resolution,
+                         "height": canvas.height / resolution,
+                         "resolution": resolution,
+                         "epoch": epoch });
+      }
+    }
+    serviceWorkQueue();
+    
+    if (workers.length || busyWorkers.length) {
+      // Use the current contents to provide immediate feedback when using threaded rendering
+      if (old_width && old_height) {
+        transformAndRenderFractalPatch(canvas, old_sx, old_sy, old_sw, old_sh, 1,
+                                       0, 0, canvas.width, canvas.height, canvas.width, canvas.height, true);
+      }
+    }
+    
+    return;
+  }
+  
+  var startTime;
+  var xoffset = 0;
+  var yoffset = 0;
+  var zoom = 2.0;
+  var redrawId = 0;
+  
+  function drawFrame(t) {
+    var aspect = canvas.width / canvas.height;
+    var sw = zoom;
+    var sh = zoom / aspect;
+    var sx = -sw / 2 - xoffset;
+    var sy = -sh / 2 - yoffset;
+    
+    renderFractal(canvas, sx, sy, sw, sh, 250);
+
+    if (t && animating) {
+      if (startTime) {
+        var elapsed = t - startTime;
+        var frames = Math.floor(elapsed / 16);
+        if (frames) {
+          startTime += frames * 16;
+          
+          // Run animation
+          // Cycle palette
+          palette = cyclePalette(palette, frames);
+          for (var worker of workers)
+            worker.postMessage({ "message": "setPalette", "palette": palette });
+          for (var worker of busyWorkers)
+            worker.postMessage({ "message": "setPalette", "palette": palette });
+        }
+      } else
+        startTime = t;
+    } else
+      startTime = 0;
+
+    redrawId = 0;
+    if (animating)
+      redraw();
+  }
+  
+  function redraw() {
+    if (!redrawId)
+      redrawId = requestAnimationFrame(drawFrame);
+  }
+  
+  var workersTarget = 1;
+  var workersRequested = 0;
+  function refreshWorkerPool() {
+    workersTarget = document.getElementById("workers").value;
+    var nCurrentWorkers = workers.length + busyWorkers.length + workersRequested;
+    console.log("Refreshing worker pool (pool size: " + workers.length + "/" + busyWorkers.length + ", initialising: " + workersRequested + ", target: " + workersTarget + ")");
+    if (nCurrentWorkers > workersTarget) {
+      while (workers.length + busyWorkers.length > workersTarget) {
+        if (workers.length)
+          workers.pop().postMessage({ "message": "close" });
+        else
+          busyWorkers.pop().postMessage({ "message": "close" });
+      }
+    } else if (nCurrentWorkers < workersTarget) {
+      for (var i = 0; i < workersTarget - nCurrentWorkers; ++i) {
+        ++workersRequested;
+        var newWorker = new Worker("mandelbrot.js");
+        newWorker.addEventListener('message', function(message) {
+          //console.log("Worker message", message);
+          var e = message.data;
+          var worker = message.srcElement;
+          switch (e.message) {
+          case "ready":
+            if (workers.length < workersTarget) {
+              workers.push(worker);
+              console.log("Worker ready, added to render pool (" + workers.length + ")");
+              worker.postMessage({ "message": "setPalette", "palette": palette });
+            } else {
+              worker.postMessage({ "message": "close" });
+            }
+            --workersRequested;
+            break;
+          case "renderComplete":
+            //console.log("renderComplete", e);
+            if (e.epoch == lastEpoch) {
+              transformAndRenderFractalPatch(e.image, e.sx, e.sy, e.sw, e.sh, e.resolution, e.tx, e.ty, e.tw, e.th, e.width, e.height);
+            }
+            busyWorkers.splice(busyWorkers.findIndex((w) => w == worker), 1);
+            workers.push(worker);
+            serviceWorkQueue();
+            break;
+          case "error":
+            --workersRequested;
+            console.error("Error initialising worker (no OffscreenCanvas/ImageBitmap)");
+            document.getElementById("worker-controls").className = "disabled";
+            document.getElementById("workers").value = 0;
+            worker.postMessage({ "message": "close" });
+            break;
+          }
+        });
+        newWorker.postMessage({ "message": "init" });
+      }
+    }
+  }
+  
+  canvas.addEventListener("dblclick", (e) => {
+  }, false);
+  var mousedown = false;
+  var mouselastX, mouselastY;
+  canvas.addEventListener("mousedown", (e) => {
+    mouselastX = e.offsetX;
+    mouselastY = e.offsetY;
+    mousedown = true;
+  }, false);
+  canvas.addEventListener("mousemove", (e) => {
+    if (mousedown) {
+      xoffset += (e.offsetX - mouselastX) * (zoom / canvas.width);
+      yoffset += (e.offsetY - mouselastY) * (zoom / canvas.width);
+      redraw();
+    }
+    mouselastX = e.offsetX;
+    mouselastY = e.offsetY;
+  }, false);
+  canvas.addEventListener("mouseup", (e) => {
+    mousedown = false;
+  }, false);
+  canvas.addEventListener("wheel", (e) => {
+    var aspect = canvas.width / canvas.height;
+    var oldWidth = zoom;
+    var oldHeight = zoom / aspect;
+    
+    if (event.deltaY >= 0)
+      zoom *= 1 + (-event.deltaY / 100);
+    else
+      zoom /= 1 + (event.deltaY / 100);
+      
+    // Keep the cursor position the same pre/post zoom
+    var newWidth = zoom;
+    var newHeight = zoom / aspect;
+    
+    xoffset += ((e.offsetX - canvas.width/2) / canvas.width) * (newWidth - oldWidth);
+    yoffset += ((e.offsetY - canvas.height/2) / canvas.height) * (newHeight - oldHeight);
+    
+    redraw();
+  }, false);
+  
+  function start() {
+    console.log("Starting animation");
+    animating = true;
+    redraw();
+  }
+  
+  function stop() {
+    console.log("Stopping animation");
+    animating = false;
+  }
+  
+  var resInput = document.getElementById("res");
+  function resChange() {
+    resolution = resInput.value;
+    redraw();
+  }
+
+  var resizeTimeout = 0;
+
+  window.onresize = () => {
+    clearTimeout(resizeTimeout);
+    resizeTimeout = setTimeout(() => {
+      var oldWidth = canvas.width;
+      var oldHeight = canvas.height;
+      canvas.width = getComputedStyle(canvas).width.slice(0, -2);
+      canvas.height = getComputedStyle(canvas).height.slice(0, -2)
+      
+      if ((oldWidth != canvas.width || oldHeight != canvas.height))
+        redraw();
+    }, 100);
+  };
+
+  refreshWorkerPool();
+  window.onresize();
+</script>
+</html>
