@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>BalloonBench</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+    }
+    
+    #root {
+      width: 100%;
+      height: 100%;
+    }
+    
+    #footer {
+      position: fixed;
+      top: 0;
+      right: 0;
+      margin: 0.8rem;
+      font-weight: bold;
+      font-style: italic;
+    }
+    
+    #logo-balloon {
+      height: 10vh;
+      vertical-align: top;
+      padding-left: 0.8rem;
+      float: right;
+    }
+    
+    .balloon {
+      transition: transform 3s ease-in;
+    }
+  </style>
+</head>
+
+<body>
+  <svg xmlns="http://www.w3.org/2000/svg" id="root"></svg>
+  <div id="footer">
+    BalloonBench<object id="logo-balloon" type="image/svg+xml" data="balloon.svg"></object>
+    <div><span id="fps">0</span> FPS</div>
+    <div><span id="score">0</span> Score</div>
+  </div>
+</body>
+
+<script>
+  // Width/height of page
+  let width = 0;
+  let height = 0;
+  
+  // Array of newly added balloons to iterate over for animations
+  let balloonId = 0;
+  let newBalloons = [];
+  
+  // Variables to track frame-rate
+  const fpsLabel = document.getElementById("fps");
+  let lastTime = 0;
+  let frameCount = 0;
+  let checkpoint = 0;
+  
+  // Variables to track balloon count and score
+  const scoreLabel = document.getElementById("score");
+  let balloonTarget = 100;
+  let nBalloons = 0;
+  let fpsTarget = 30;
+  
+  function randomIntRange(min, max) {
+    return ((Math.random() * ((max | 0) - (min | 0))) + (min | 0)) | 0;
+  }
+  
+  function drawFrame(timestamp) {
+    while (newBalloons.length) {
+      let balloon = newBalloons.pop();
+      setTimeout(() => {
+        balloon.style.transform = "translateX(" + randomIntRange(0, width) + "px) translateY(-250px)";
+        balloon.style.transitionDuration = "" + ((Math.random() * 3) + 2) + "s";
+        balloon.addEventListener('transitionend', (e) => {
+          root.removeChild(e.srcElement);
+          --nBalloons;
+          while (nBalloons < balloonTarget) {
+            addBalloons(1);
+          }
+        });
+      }, 0);
+    }
+  
+    if (lastTime) {
+      let elapsed = timestamp - lastTime;
+      let fps = Math.round(frameCount / (elapsed / 1000));
+      let second = Math.floor(elapsed / 1000);
+      
+      if (second > checkpoint) {
+        fpsLabel.textContent = fps;
+        checkpoint = second;
+      }
+      
+      if (checkpoint == 5) {
+        //history.push({ 'fps': fps, 'target': balloonTarget });
+        let delta = fps - fpsTarget;
+
+        if (delta >= 0)
+          scoreLabel.textContent = balloonTarget;
+
+        if (delta >= 0)
+          balloonTarget += 100;
+        else if (delta < -2)
+          balloonTarget -= 50;
+        
+        frameCount = 0;
+        checkpoint = 0;
+        lastTime = timestamp;
+      }
+    } else
+      lastTime = timestamp;
+      
+    ++frameCount;
+    requestAnimationFrame(drawFrame);
+  }
+  
+  function randomColour() {
+     let colour = '#';
+     for (let i = 0; i < 6; i++) {
+        const bit = (Math.random() * 16) | 0;
+        colour += (bit).toString(16);
+     }
+     return colour;
+  }
+
+  function recolourBalloon(balloon) {
+    let body = balloon.querySelector("#body");
+    let knot = balloon.querySelector("#knot");
+    let colour = randomColour();
+    body.style.fill = colour;
+    knot.style.fill = colour;
+  }
+  
+  function addBalloons(n) {
+    nBalloons += n;
+    for (let i = 0; i < n; ++i) {
+      let balloon = parentBalloon.contentDocument.getElementById("layer1").cloneNode(true);
+      balloon.id = "balloon" + (balloonId++);
+      balloon.classList.add("balloon");
+      balloon.style.transform = "translateX(" + randomIntRange(0, width) + "px) translateY(" + randomIntRange(height, height * 2) + "px)";
+      recolourBalloon(balloon);
+      root.appendChild(balloon);
+      newBalloons.push(balloon);
+      getComputedStyle(balloon);
+    }
+  }
+  
+  let parentBalloon = document.getElementById("logo-balloon");
+  let root = document.getElementById("root");
+  parentBalloon.addEventListener("load", () => {
+    addBalloons(balloonTarget);
+  }, false);
+  
+  window.onresize = () => {
+    let style = getComputedStyle(root);
+    width = style.width.slice(0, -2);
+    height = style.height.slice(0, -2);
+    
+    root.setAttribute("viewBox", "0 0 " + width + " " + height);
+  };
+  window.onresize();
+  
+  requestAnimationFrame(drawFrame);
+</script>
+</html>
