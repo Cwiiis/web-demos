@@ -1,10 +1,10 @@
   
-function calcPixel(x, y, iterations) {
+function calcPixel(x, y, iterations, factor) {
   var i;
   var a = 0, b = 0;
   for (i = 0; i < iterations; ++i) {
       var dx = a * a - b * b + x;
-      var dy = 2 * a * b + y;
+      var dy = factor * a * b + y;
       if (dx * dx + dy * dy > 4)
         break;
       a = dx; b = dy;
@@ -13,10 +13,10 @@ function calcPixel(x, y, iterations) {
   return i / iterations;
 }
 
-function renderPatch(ctx, sx, sy, sw, sh, dw, dh, data, tx, ty, iterations, palette) {
+function renderPatch(ctx, sx, sy, sw, sh, dw, dh, data, tx, ty, iterations, factor, palette) {
   for (var y = 0; y < data.height; ++y) {
     for (var x = 0; x < data.width; ++x) {
-      var p = calcPixel(sx + (sw/dw) * (x + tx), sy + (sh/dh) * (y + ty), iterations);
+      var p = calcPixel(sx + (sw/dw) * (x + tx), sy + (sh/dh) * (y + ty), iterations, factor);
       var index = (y * data.width + x) * 4;
       var colour = palette[Math.floor(p * (palette.length - 1))];
       data.data[index] = colour.r;
@@ -30,14 +30,14 @@ function renderPatch(ctx, sx, sy, sw, sh, dw, dh, data, tx, ty, iterations, pale
 var canvas = null;
 var renderTimeoutId = 0;
 var epoch = 0;
-var width, height, sx, sy, sw, sh, tx, ty, tw, th, iterations, resolution;
+var width, height, sx, sy, sw, sh, tx, ty, tw, th, iterations, factor, resolution;
 function renderPatchTimeout() {
     if (!canvas || canvas.width != tw || canvas.height != th)
       canvas = new OffscreenCanvas(tw, th);
       
     var ctx = canvas.getContext("2d");
     var imageData = ctx.createImageData(canvas.width, canvas.height);
-    renderPatch(ctx, sx, sy, sw, sh, width, height, imageData, tx, ty, iterations, palette);
+    renderPatch(ctx, sx, sy, sw, sh, width, height, imageData, tx, ty, iterations, factor, palette);
     ctx.putImageData(imageData, 0, 0);
     
     var image = canvas.transferToImageBitmap();
@@ -73,6 +73,7 @@ self.onmessage = function(e) {
       sw = e.data.sw;
       sh = e.data.sh;
       iterations = e.data.iterations;
+      factor = e.data.factor;
       tx = e.data.tx;
       ty = e.data.ty;
       tw = e.data.tw;

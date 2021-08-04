@@ -36,7 +36,7 @@
       margin-top: 0.5em;
     }
     
-    #worker-controls.disabled {
+    .disabled {
       opacity: 0.5;
       pointer-events: none;
     }
@@ -47,11 +47,11 @@
   <div id="controls">
     <div id="worker-controls">
       Rendering threads<br />
-      <input type="number" name="workers" id="workers" min="0" max="64" step="1" value="0" onchange="refreshWorkerPool();" />
+      <input type="number" name="workers" id="workers" min="0" max="64" step="1" value="0" onchange="refreshWorkerPool();" /><br />
     </div>
     <div>
       Resolution<br />
-      <input type="range" id="res" list="resolutions" min="1" max="8" step="1" value="1" oninput="resChange();">
+      <input type="range" id="res" list="resolutions" min="1" max="8" step="1" value="1" oninput="resChange();" />
       <datalist id="resolutions">
         <option value="1" label="1/1"></option>
         <option value="2" label="1/2"></option>
@@ -62,51 +62,88 @@
         <option value="7" label="1/7"></option>
         <option value="8" label="1/8"></option>
       </datalist>
+      <button onclick="toggleResolutionAnimation();">Auto</button>
     </div>
     <div>
-      Animation<br />
-      <button onclick="start();">Start</button>
-      <button onclick="stop();">Stop</button>
+      Iterations<br />
+      <input type="range" id="iterations" min="10" max="500" step="1" value="250" oninput="iterationsChange();" />
+      <button onclick="toggleIterationsAnimation();">Auto</button>
     </div>
+    <div>
+      Skew<br />
+      <input type="range" id="factor" min="1" max="3" step="0.005" value="2" oninput="factorChange();" />
+      <button onclick="toggleFactorAnimation();">Auto</button>
+    </div>
+    <button onclick="regeneratePalette(); redraw();">Randomise colours</button>
+    <input id="cyclepalette" type="checkbox" oninput="togglePaletteAnimation();" /><label for="cyclepalette">Cycle</label>
   </div>
 </body>
 <script>
+  var canvas = document.getElementById("output");
+  
+  // Palette variables
   var palette = [];
   var paletteSize = 1024;
   
-  var r_range = { "min": 64, "max": 256 };
-  var g_range = { "min": 0, "max": 192 };
-  var b_range = { "min": 0, "max": 96 };
+  // Work queue variables
+  var workers = [];
+  var busyWorkers = [];
+  var workQueue = [];
+  var epoch = 0;
+  var lastEpoch = 0;
   
-  var r_i = Math.random() * (r_range.max - r_range.min) + r_range.min;
-  var g_i = Math.random() * (g_range.max - g_range.min) + g_range.min;
-  var b_i = Math.random() * (b_range.max - b_range.min) + b_range.min;
+  // Render variables
+  var resolution = 1;
+  var iterations = 250;
+  var factor = 2;
+  var bufferedRenders = [];
   
-  for (var i = 0; i < paletteSize; ++i) {
-    palette.push({ "r": Math.floor(r_i), "g": Math.floor(g_i), "b": Math.floor(b_i) });
-    
-    r_i += (r_range.max - r_range.min) / paletteSize;
-    if (r_i >= r_range.max) r_i -= (r_range.max - r_range.min);
-    g_i += (g_range.max - g_range.min) / paletteSize;
-    if (g_i >= g_range.max) g_i -= (g_range.max - g_range.min);
-    b_i += (b_range.max - b_range.min) / paletteSize;
-    if (b_i >= b_range.max) b_i -= (b_range.max - b_range.min);
+  // Animation variables
+  var animateRes = false;
+  var animateIterations = false;
+  var iterationsDirection = 1;
+  var animateFactor = false;
+  var factorDirection = 1;
+  var animatePalette = false;
+
+  function animating() {
+    return animateIterations || animateFactor || animatePalette;
   }
-  palette.push({ "r": 0, "g": 0, "b": 0 });
+
+  function randomIntRange(min, max) {
+    return ((Math.random() * ((max | 0) - (min | 0))) + (min | 0)) | 0;
+  }
+  
+  function regeneratePalette() {
+    var stops = [];
+    for (var i = 0; i < randomIntRange(3, 5); ++i) {
+      stops.push({ "r": randomIntRange(0, 255),
+                   "g": randomIntRange(0, 255),
+                   "b": randomIntRange(0, 255) });
+    }
+    palette = [];
+    for (var i = 0; i < paletteSize; ++i) {
+      var stopIndex = (i / paletteSize) * (stops.length - 1);
+      var lower = Math.ceil(stopIndex) - stopIndex;
+      var upper = 1 - lower;
+      var lowerColor = stops[Math.floor(stopIndex)];
+      var upperColor = stops[Math.ceil(stopIndex)];
+      palette.push({ "r": (lower * lowerColor.r) + (upper * upperColor.r),
+                     "g": (lower * lowerColor.g) + (upper * upperColor.g),
+                     "b": (lower * lowerColor.b) + (upper * upperColor.b) });
+    }
+    palette.push({ "r": 0, "g": 0, "b": 0 });
+    for (var worker of workers)
+      worker.postMessage({ "message": "setPalette", "palette": palette });
+    for (var worker of busyWorkers)
+      worker.postMessage({ "message": "setPalette", "palette": palette });
+  }
   
   function cyclePalette(palette, offset) {
     var paletteSize = palette.length - 1;
     return palette.slice(offset, paletteSize).concat(palette.slice(0, offset)).concat(palette[paletteSize]);
   }
 
-  var canvas = document.getElementById("output");
-  
-  var workers = [];
-  var busyWorkers = [];
-  var workQueue = [];
-  var epoch = 0;
-  var lastEpoch = 0;
-  var resolution = 1;
   var last_sx, last_sy, last_sw, last_sh, last_width, last_height;
   function transformAndRenderFractalPatch(image, sx, sy, sw, sh, resolution, tx, ty, tw, th, width, height, clear) {
         var dx = (sx - last_sx) * width / sw;
@@ -132,7 +169,7 @@
         }
   }
   
-  var animating = false;
+  regeneratePalette();  
   
   function serviceWorkQueue() {
     if (!workQueue.length)
@@ -145,7 +182,7 @@
         var job = workQueue.shift();
         
         var imageData = ctx.createImageData(job.tw, job.th);
-        renderPatch(ctx, job.sx, job.sy, job.sw, job.sh, job.width, job.height, imageData, job.tx, job.ty, job.iterations, palette);
+        renderPatch(ctx, job.sx, job.sy, job.sw, job.sh, job.width, job.height, imageData, job.tx, job.ty, job.iterations, factor, palette);
         
         if (job.resolution == 1)
             ctx.putImageData(imageData, job.tx, job.ty);
@@ -169,10 +206,6 @@
         
       // If we're moving onto a new render, skip any old renders between the last and this one
       if (workQueue[0].epoch > lastEpoch) {
-        // Wait for a whole render to complete while animating
-        if (animating && busyWorkers.length)
-          return;
-          
         while (workQueue[0].epoch < workQueue[workQueue.length - 1].epoch)
           workQueue.shift();
       }
@@ -217,6 +250,7 @@
                          "sw": sw,
                          "sh": sh,
                          "iterations": iterations,
+                         "factor": factor,
                          "tx": tx,
                          "ty": ty,
                          "tw": tw,
@@ -239,11 +273,14 @@
     
     return;
   }
-  
-  var startTime;
+
+  // Fractal pan/zoom variables  
   var xoffset = 0;
   var yoffset = 0;
   var zoom = 2.0;
+  
+  // Animation variables
+  var startTime;
   var redrawId = 0;
   
   function drawFrame(t) {
@@ -253,9 +290,9 @@
     var sx = -sw / 2 - xoffset;
     var sy = -sh / 2 - yoffset;
     
-    renderFractal(canvas, sx, sy, sw, sh, 250);
+    renderFractal(canvas, sx, sy, sw, sh, iterations);
 
-    if (t && animating) {
+    if (t && animating()) {
       if (startTime) {
         var elapsed = t - startTime;
         var frames = Math.floor(elapsed / 16);
@@ -263,12 +300,37 @@
           startTime += frames * 16;
           
           // Run animation
-          // Cycle palette
-          palette = cyclePalette(palette, frames);
-          for (var worker of workers)
-            worker.postMessage({ "message": "setPalette", "palette": palette });
-          for (var worker of busyWorkers)
-            worker.postMessage({ "message": "setPalette", "palette": palette });
+          if (animatePalette) {
+            palette = cyclePalette(palette, frames);
+            for (var worker of workers)
+              worker.postMessage({ "message": "setPalette", "palette": palette });
+            for (var worker of busyWorkers)
+              worker.postMessage({ "message": "setPalette", "palette": palette });
+          }
+          if (animateIterations) {
+            iterations += iterationsDirection * frames;
+            if (iterations >= parseFloat(iterationsInput.max)) {
+              iterations = parseFloat(iterationsInput.max);
+              iterationsDirection = -iterationsDirection;
+            }
+            if (iterations <= parseFloat(iterationsInput.min)) {
+              iterations = parseFloat(iterationsInput.min);
+              iterationsDirection = -iterationsDirection;
+            }
+            iterationsInput.valueAsNumber = iterations;
+          }
+          if (animateFactor) {
+            factor += parseFloat(factorInput.step) * factorDirection * frames;
+            if (factor >= parseFloat(factorInput.max)) {
+              factor = parseFloat(factorInput.max);
+              factorDirection = -factorDirection;
+            }
+            if (factor <= parseFloat(factorInput.min)) {
+              factor = parseFloat(factorInput.min);
+              factorDirection = -factorDirection;
+            }
+            factorInput.valueAsNumber = factor;
+          }
         }
       } else
         startTime = t;
@@ -276,13 +338,39 @@
       startTime = 0;
 
     redrawId = 0;
-    if (animating)
+    if (animating())
       redraw();
   }
   
   function redraw() {
     if (!redrawId)
       redrawId = requestAnimationFrame(drawFrame);
+  }
+  
+  function flushBufferedRenders() {
+    var lowestEpoch = lastEpoch;
+    var nBuffers = 0;
+    for (var e of bufferedRenders) {
+      if (e.epoch < lowestEpoch) {
+        lowestEpoch = e.epoch
+        nBuffers = 1;
+      } else if (e.epoch == lowestEpoch)
+        ++nBuffers;
+    }
+    
+    if (nBuffers != 64)
+      return;
+
+    var n = 0;
+    while (nBuffers) {
+      var e = bufferedRenders[n];
+      if (e.epoch == lowestEpoch) {
+        transformAndRenderFractalPatch(e.image, e.sx, e.sy, e.sw, e.sh, e.resolution, e.tx, e.ty, e.tw, e.th, e.width, e.height);
+        --nBuffers;
+        bufferedRenders.splice(n, 1);
+      } else
+        ++n;
+    }
   }
   
   var workersTarget = 1;
@@ -319,9 +407,8 @@
             break;
           case "renderComplete":
             //console.log("renderComplete", e);
-            if (e.epoch == lastEpoch) {
-              transformAndRenderFractalPatch(e.image, e.sx, e.sy, e.sw, e.sh, e.resolution, e.tx, e.ty, e.tw, e.th, e.width, e.height);
-            }
+            bufferedRenders.push(e);
+            flushBufferedRenders();
             busyWorkers.splice(busyWorkers.findIndex((w) => w == worker), 1);
             workers.push(worker);
             serviceWorkQueue();
@@ -381,23 +468,74 @@
     redraw();
   }, false);
   
-  function start() {
-    console.log("Starting animation");
-    animating = true;
+  var resInput = document.getElementById("res");
+  function resChange() {
+    if (resolution == resInput.valueAsNumber)
+      return;
+    resolution = resInput.valueAsNumber;
     redraw();
   }
   
-  function stop() {
-    console.log("Stopping animation");
-    animating = false;
-  }
-  
-  var resInput = document.getElementById("res");
-  function resChange() {
-    resolution = resInput.value;
+  var iterationsInput = document.getElementById("iterations");
+  function iterationsChange() {
+    if (iterations == iterationsInput.valueAsNumber)
+      return;
+    iterations = iterationsInput.valueAsNumber;
     redraw();
   }
 
+  var factorInput = document.getElementById("factor");
+  function factorChange() {
+    if (factor == factorInput.valueAsNumber)
+      return;
+    factor = factorInput.valueAsNumber;
+    redraw();
+  }
+  
+  var resInterval = 0;
+  var resDirection = 1;
+  function toggleResolutionAnimation() {
+    animateRes = !animateRes;
+    if (animateRes) {
+      resInput.classList.add("disabled");
+      resInterval = setInterval(() => {
+        resInput.valueAsNumber += resDirection;
+        resolution = resInput.valueAsNumber;
+        if (resInput.valueAsNumber == parseFloat(resInput.max) || resInput.valueAsNumber == parseFloat(resInput.min))
+          resDirection = -resDirection;
+        redraw();
+      }, 3000);
+    } else {
+      clearInterval(resInterval);
+      resInput.classList.remove("disabled");
+    }
+  }
+  
+  function toggleIterationsAnimation() {
+    animateIterations = !animateIterations;
+    if (animateIterations) {
+      iterationsInput.classList.add("disabled");
+      redraw();
+    } else
+      iterationsInput.classList.remove("disabled");
+  }
+  
+  function toggleFactorAnimation() {
+    animateFactor = !animateFactor;
+    if (animateFactor) {
+      factorInput.classList.add("disabled");
+      redraw();
+    } else
+      factorInput.classList.remove("disabled");
+  }
+  
+  var cyclePaletteInput = document.getElementById("cyclepalette");
+  function togglePaletteAnimation() {
+    animatePalette = cyclePaletteInput.checked;
+    if (animatePalette)
+      redraw();
+  }
+  
   var resizeTimeout = 0;
 
   window.onresize = () => {
