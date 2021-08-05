@@ -119,6 +119,7 @@
   var animateFactor = false;
   var factorDirection = 1;
   var animatePalette = false;
+  var paletteOffset = 0;
 
   function animating() {
     return animateIterations || animateFactor || animatePalette;
@@ -153,11 +154,6 @@
       worker.postMessage({ "message": "setPalette", "palette": palette });
   }
   
-  function cyclePalette(palette, offset) {
-    var paletteSize = palette.length - 1;
-    return palette.slice(offset, paletteSize).concat(palette.slice(0, offset)).concat(palette[paletteSize]);
-  }
-
   var last_sx, last_sy, last_sw, last_sh, last_width, last_height;
   function transformAndRenderFractalPatch(image, sx, sy, sw, sh, resolution, tx, ty, tw, th, width, height, clear) {
         var dx = (sx - last_sx) * width / sw;
@@ -210,7 +206,7 @@
         var job = workQueue.shift();
         
         var imageData = ctx.createImageData(job.tw, job.th);
-        renderPatch(ctx, job.sx, job.sy, job.sw, job.sh, job.width, job.height, imageData, job.tx, job.ty, job.iterations, factor, palette);
+        renderPatch(ctx, job.sx, job.sy, job.sw, job.sh, job.width, job.height, imageData, job.tx, job.ty, job.iterations, factor, palette, paletteOffset);
         
         if (job.resolution == 1)
             ctx.putImageData(imageData, job.tx, job.ty);
@@ -283,6 +279,7 @@
                          "sh": sh,
                          "iterations": iterations,
                          "factor": factor,
+                         "paletteOffset": paletteOffset,
                          "tx": tx,
                          "ty": ty,
                          "tw": tw,
@@ -333,11 +330,9 @@
           
           // Run animation
           if (animatePalette) {
-            palette = cyclePalette(palette, frames);
-            for (var worker of workers)
-              worker.postMessage({ "message": "setPalette", "palette": palette });
-            for (var worker of busyWorkers)
-              worker.postMessage({ "message": "setPalette", "palette": palette });
+            paletteOffset += frames;
+            while (paletteOffset >= paletteSize - 1)
+              paletteOffset -= (paletteSize - 1);
           }
           if (animateIterations) {
             iterations += iterationsDirection * frames;
