@@ -12,6 +12,16 @@
       height: 100%;
     }
     
+    #details {
+      position: fixed;
+      top: 0;
+      right: 0;
+      margin: 1em 2em 0 0;
+      color: white;
+      text-align: right;
+      text-shadow: 1px 1px 2px black;
+    }
+    
     #controls {
       position: fixed;
       bottom: 0;
@@ -44,6 +54,10 @@
 </head>
 <body>
   <canvas id="output"></canvas>
+  <div id="details">
+    <span id="res-label"></span><br />
+    <span id="fps-label"></span>
+  </div>
   <div id="controls">
     <div id="worker-controls">
       Rendering threads<br />
@@ -171,6 +185,20 @@
   
   regeneratePalette();  
   
+  // FPS counter variables
+  var fpsLabel = document.getElementById("fps-label");
+  var lastFrameFinish = 0;
+  
+  function updateFPS() {
+    var now = Date.now();
+    var elapsed = now - lastFrameFinish;
+    lastFrameFinish = now;
+    if (animating())
+      fpsLabel.textContent = "" + Math.round(1000 / elapsed) + "fps";
+    else
+      fpsLabel.textContent = "";
+  }
+  
   function serviceWorkQueue() {
     if (!workQueue.length)
       return;
@@ -196,6 +224,7 @@
         }
       }
       
+      updateFPS();
       return;
     }
     
@@ -237,6 +266,9 @@
     var tileWidth = Math.floor((canvas.width / resolution) / 8);
     var tileHeight = Math.floor((canvas.height / resolution) / 8);
     var worker = 0;
+    var doAsyncRender = (worker.length || busyWorkers.length) &&
+      old_width && old_height &&
+      (old_sx != sx || old_sy != sy || old_sw != sw || old_sh != sh);
     ++epoch;
     for (var y = 0; y < 8; ++y) {
       for (var x = 0; x < 8; ++x) {
@@ -263,12 +295,11 @@
     }
     serviceWorkQueue();
     
-    if (workers.length || busyWorkers.length) {
-      // Use the current contents to provide immediate feedback when using threaded rendering
-      if (old_width && old_height) {
-        transformAndRenderFractalPatch(canvas, old_sx, old_sy, old_sw, old_sh, 1,
-                                       0, 0, canvas.width, canvas.height, canvas.width, canvas.height, true);
-      }
+    // Use the current contents to provide immediate feedback when using threaded rendering
+    if (doAsyncRender) {
+      transformAndRenderFractalPatch(canvas, old_sx, old_sy, old_sw, old_sh, 1,
+                                     0, 0, canvas.width, canvas.height,
+                                     canvas.width, canvas.height, true);
     }
     
     return;
@@ -282,6 +313,7 @@
   // Animation variables
   var startTime;
   var redrawId = 0;
+  var frameTarget = 1000.0 / 60.0;
   
   function drawFrame(t) {
     var aspect = canvas.width / canvas.height;
@@ -295,9 +327,9 @@
     if (t && animating()) {
       if (startTime) {
         var elapsed = t - startTime;
-        var frames = Math.floor(elapsed / 16);
+        var frames = Math.floor(elapsed / frameTarget);
         if (frames) {
-          startTime += frames * 16;
+          startTime += frames * frameTarget;
           
           // Run animation
           if (animatePalette) {
@@ -360,7 +392,9 @@
     
     if (nBuffers != 64)
       return;
-
+      
+    updateFPS();
+    
     var n = 0;
     while (nBuffers) {
       var e = bufferedRenders[n];
@@ -468,11 +502,16 @@
     redraw();
   }, false);
   
+  function updateResLabel() {
+    resLabel.textContent = "" + Math.floor(canvas.width / resolution) + "x" + Math.floor(canvas.height / resolution);
+  }
+  
   var resInput = document.getElementById("res");
   function resChange() {
     if (resolution == resInput.valueAsNumber)
       return;
     resolution = resInput.valueAsNumber;
+    updateResLabel();
     redraw();
   }
   
@@ -501,6 +540,7 @@
       resInterval = setInterval(() => {
         resInput.valueAsNumber += resDirection;
         resolution = resInput.valueAsNumber;
+        updateResLabel();
         if (resInput.valueAsNumber == parseFloat(resInput.max) || resInput.valueAsNumber == parseFloat(resInput.min))
           resDirection = -resDirection;
         redraw();
@@ -537,6 +577,7 @@
   }
   
   var resizeTimeout = 0;
+  var resLabel = document.getElementById("res-label");
 
   window.onresize = () => {
     clearTimeout(resizeTimeout);
@@ -546,8 +587,10 @@
       canvas.width = getComputedStyle(canvas).width.slice(0, -2);
       canvas.height = getComputedStyle(canvas).height.slice(0, -2)
       
-      if ((oldWidth != canvas.width || oldHeight != canvas.height))
+      if ((oldWidth != canvas.width || oldHeight != canvas.height)) {
+        updateResLabel();
         redraw();
+      }
     }, 100);
   };
 
