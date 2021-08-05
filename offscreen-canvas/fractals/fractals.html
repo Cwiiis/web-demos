@@ -409,12 +409,8 @@
     var nCurrentWorkers = workers.length + busyWorkers.length + workersRequested;
     console.log("Refreshing worker pool (pool size: " + workers.length + "/" + busyWorkers.length + ", initialising: " + workersRequested + ", target: " + workersTarget + ")");
     if (nCurrentWorkers > workersTarget) {
-      while (workers.length + busyWorkers.length > workersTarget) {
-        if (workers.length)
-          workers.pop().postMessage({ "message": "close" });
-        else
-          busyWorkers.pop().postMessage({ "message": "close" });
-      }
+      while (workers.length && (workers.length + busyWorkers.length > workersTarget))
+        workers.pop().postMessage({ "message": "close" });
     } else if (nCurrentWorkers < workersTarget) {
       for (var i = 0; i < workersTarget - nCurrentWorkers; ++i) {
         ++workersRequested;
@@ -429,9 +425,8 @@
               workers.push(worker);
               console.log("Worker ready, added to render pool (" + workers.length + ")");
               worker.postMessage({ "message": "setPalette", "palette": palette });
-            } else {
+            } else
               worker.postMessage({ "message": "close" });
-            }
             --workersRequested;
             break;
           case "renderComplete":
@@ -439,7 +434,10 @@
             bufferedRenders.push(e);
             flushBufferedRenders();
             busyWorkers.splice(busyWorkers.findIndex((w) => w == worker), 1);
-            workers.push(worker);
+            if (workers.length < workersTarget)
+              workers.push(worker);
+            else
+              worker.postMessage({ "message": "close" });
             serviceWorkQueue();
             break;
           case "error":
