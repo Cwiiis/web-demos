@@ -1,0 +1,169 @@
+<html>
+  <head>
+    <title>CSS scroll snap demo</title>
+    <style>
+      html, body {
+        margin: 0;
+        scroll-snap-type: both mandatory;
+        background: black;
+        color: white;
+      }
+      
+      #grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(30vw, 1fr));
+        gap: 5vw;
+        padding: calc(50vh - 15vw) 35vw;
+        width: 100vw;
+      }
+      
+      #grid img {
+        width: 30vw;
+        height: 30vw;
+        scroll-snap-align: center;
+      }
+      
+      #overlay {
+        position: fixed;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        left: 0;
+        pointer-events: none;
+        background-image:
+          radial-gradient(circle at center, rgba(255,255,255,0.1) 0, rgba(255,255,255,0.2) 34%, rgba(255,255,255, 0.2) 35%, rgba(0,0,0,0.5) 45%, silver 46%, rgba(210, 215, 205, 1) 47%, rgba(190, 195, 185, 1) 65%);
+        padding: 1em;
+        font-style: oblique;
+        font-weight: bold;
+        font-size: 2vw;
+        text-shadow: 0.1vw 0.1vw 0.2vw black;
+      }
+      
+      #credit {
+        position: absolute;
+        bottom: 0;
+        right: 0;
+        margin: 1em;
+        font-weight: normal;
+        font-size: 1.5vw;
+        text-shadow: 0.05vw 0.05vw 0.1vw black;
+      }
+      
+      #credit a {
+        pointer-events: initial;
+        text-decoration: none;
+        color: olive;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="grid">
+      <img src="images/1.png" />
+      <img src="images/2.png" />
+      <img src="images/3.png" />
+      <img src="images/4.png" />
+      <img src="images/5.png" />
+      <img src="images/6.png" />
+      <img src="images/7.png" />
+      <img src="images/8.png" />
+      <img src="images/9.png" />
+      <img src="images/10.png" />
+      <img src="images/11.png" />
+      <img src="images/12.png" />
+      <img src="images/13.png" />
+      <img src="images/14.png" />
+      <img src="images/15.png" />
+      <img src="images/16.png" />
+      <img src="images/17.png" />
+      <img src="images/18.png" />
+      <img src="images/19.png" />
+      <img src="images/20.png" />
+      <img src="images/21.png" />
+      <img src="images/22.png" />
+      <img src="images/23.png" />
+      <img src="images/24.png" />
+      <img src="images/25.png" />
+      <img src="images/26.png" />
+      <img src="images/27.png" />
+      <img src="images/28.png" />
+      <img src="images/29.png" />
+      <img src="images/30.png" />
+      <img src="images/31.png" />
+      <img src="images/32.png" />
+      <img src="images/33.png" />
+      <img src="images/34.png" />
+      <img src="images/35.png" />
+      <img src="images/36.png" />
+      <img src="images/37.png" />
+      <img src="images/38.png" />
+      <img src="images/39.png" />
+      <img src="images/40.png" />
+      <img src="images/41.png" />
+      <img src="images/42.png" />
+      <img src="images/43.png" />
+      <img src="images/44.png" />
+      <img src="images/45.png" />
+      <img src="images/46.png" />
+      <img src="images/47.png" />
+      <img src="images/48.png" />
+      <img src="images/49.png" />
+      <img src="images/50.png" />
+      <img src="images/51.png" />
+      <img src="images/52.png" />
+      <img src="images/53.png" />
+      <img src="images/54.png" />
+      <img src="images/55.png" />
+      <img src="images/56.png" />
+      <img src="images/57.png" />
+      <img src="images/58.png" />
+      <img src="images/59.png" />
+      <img src="images/60.png" />
+      <img src="images/61.png" />
+      <img src="images/62.png" />
+      <img src="images/63.png" />
+      <img src="images/64.png" />
+      <img src="images/65.png" />
+      <img src="images/66.png" />
+      <img src="images/67.png" />
+      <img src="images/68.png" />
+      <img src="images/69.png" />
+      <img src="images/70.png" />
+      <img src="images/71.png" />
+      <img src="images/72.png" />
+      <img src="images/73.png" />
+      <img src="images/74.png" />
+      <img src="images/75.png" />
+      <img src="images/76.png" />
+      <img src="images/77.png" />
+      <img src="images/78.png" />
+      <img src="images/79.png" />
+      <img src="images/80.png" />
+      <img src="images/81.png" />
+      <img src="images/82.png" />
+      <img src="images/83.png" />
+      <img src="images/84.png" />
+      <img src="images/85.png" />
+      <img src="images/86.png" />
+      <img src="images/87.png" />
+      <img src="images/88.png" />
+      <img src="images/89.png" />
+      <img src="images/90.png" />
+      <img src="images/91.png" />
+      <img src="images/92.png" />
+      <img src="images/93.png" />
+      <img src="images/94.png" />
+      <img src="images/95.png" />
+      <img src="images/96.png" />
+      <img src="images/97.png" />
+      <img src="images/98.png" />
+      <img src="images/99.png" />
+      <img src="images/100.png" />
+    </div>
+    <div id="overlay">
+      Pure HTML/CSS image scroller
+      <span id="credit">Images taken from <a href="https://testimages.org/">testimages.org</a>, licensed under <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/">CC BY-NC-SA 4.0</a></span>
+    </div>
+  </body>
+  <script>
+  </script>
+</html>
