@@ -1,0 +1,450 @@
+<style>
+html {
+  height: 100%;
+}
+
+body {
+  margin: 5em;
+  height: calc(100% - 10em);
+}
+
+#canvas {
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
+}
+
+#controls {
+  position: absolute;
+  top: 0;
+  right: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  color: white;
+  text-align: center;
+  margin: 1.5em;
+  padding: 1em;
+  border-radius: 0.5em;
+}
+
+#controls > div {
+  margin-bottom: 1em;
+}
+
+#controls > div:last-child {
+  margin-bottom: 0;
+}
+
+#controls button, #controls input {
+  margin-top: 0.5em;
+}
+
+#controls #pause {
+  width: 5em;
+}
+
+#controls #stats {
+  /*text-align: right;*/
+  will-change: contents;
+}
+
+.disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+</style>
+
+<canvas id="canvas"></canvas>
+<div id="controls">
+  <div id="playback-and-delay">
+    Frame delay<br />
+    <input type="number" name="delay" id="delay" min="0" max="50" step="1" value="0" onchange="onDelayChange();" /><br />
+    <input id="frameTime" type="checkbox" oninput="toggleFrameTime();" checked /><label for="frameTime">Show frame time</label><br />
+    <input id="frameLatency" type="checkbox" oninput="toggleFrameLatency();" checked /><label for="frameLatency">Show frame latency</label><br />
+    <input id="timestampDelay" type="checkbox" oninput="toggleTimestampDelay();" /><label for="timestampDelay">Show timestamp delay</label></br >
+  </div>
+  <input id="live-update" type="checkbox" oninput="toggleLiveUpdate();" /><label for="live-update">Live stats update</label><br />
+  <input id="throttle" type="checkbox" oninput="toggleThrottle();" /><label for="throttle">Throttle stat display</label><br />
+  <button onclick="playPause();" id="pause">Play</button>
+  <button onclick="record();" id="record">Record</button>
+  <hr />
+  <p>Frame-time stats</p>
+  <div id="stats">
+    Average: <span id="avg-time"></span><br />
+    1% low: <span id="avg-low-time"></span><br />
+    Low: <span id="low-time"></span><br />
+    High: <span id="high-time"></span>
+  </div>
+</div>
+
+<script>
+const fps = 60;
+const historyLength = 10 * fps; // In frames
+
+const canvas = document.querySelector("canvas");
+const delayInput = document.querySelector("#delay");
+const frameTimeCheckbox = document.querySelector("#frameTime");
+const frameLatencyCheckbox = document.querySelector("#frameLatency");
+const timestampDelayCheckbox = document.querySelector("#timestampDelay");
+const liveUpdateCheckbox = document.querySelector("#live-update");
+const throttleCheckbox = document.querySelector("#throttle");
+const playPauseButton = document.querySelector("#pause");
+const recordButton = document.querySelector("#record");
+const avgLabel = document.querySelector("#avg-time");
+const avgLowLabel = document.querySelector("#avg-low-time");
+const lowLabel = document.querySelector("#low-time");
+const highLabel = document.querySelector("#high-time");
+const ctx = canvas.getContext("2d", { alpha: false });
+
+let history = [];
+let graphArea = { "top": 0, "right": canvas.width, "bottom": canvas.height, "left": 0 };
+let liveUpdate = false;
+let showFrameTime = true;
+let showFrameLatency = true;
+let showTimestampDelay = false;
+let delay = 0;
+let throttle = throttleCheckbox.checked ? 0 : -1;
+let firstRun = true;
+let recording = false;
+
+function toggleFrameTime()
+{
+  showFrameTime = frameTimeCheckbox.checked;
+  if (!redrawId)
+    drawHistory();
+}
+
+function toggleFrameLatency()
+{
+  showFrameLatency = frameLatencyCheckbox.checked;
+  if (!redrawId)
+    drawHistory();
+}
+
+function toggleTimestampDelay()
+{
+  showTimestampDelay = timestampDelayCheckbox.checked;
+  if (!redrawId)
+    drawHistory();
+}
+
+function toggleLiveUpdate()
+{
+  liveUpdate = liveUpdateCheckbox.checked;
+}
+
+function toggleThrottle()
+{
+  if ((throttle >= 0) != throttleCheckbox.checked)
+    throttle = throttleCheckbox.checked ? 0 : -1;
+}
+
+function onDelayChange()
+{
+  delay = delayInput.valueAsNumber;
+}
+
+function drawLines(lines)
+{
+  ctx.beginPath();
+  for (let line of lines) {
+      ctx.moveTo(line[0], line[1]);
+      ctx.lineTo(line[2], line[3]);
+  }
+  ctx.stroke();
+}
+
+function drawPolyLine(line)
+{
+  ctx.beginPath();
+  ctx.moveTo(line[0][0], line[0][1]);
+  for (let i = 1; i < line.length; ++i)
+    ctx.lineTo(line[i][0], line[i][1]);
+  ctx.stroke();
+}
+
+function resetCtx()
+{
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.translate(0.5, 0.5);
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = "black";
+  ctx.setLineDash([]);
+  ctx.textBaseline = "alphabetic";
+  ctx.textAlign = "left";
+}
+
+function drawChrome()
+{
+  ctx.fillStyle = "white";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "black";
+
+  ctx.font = "mono 2em";
+  graphArea = { "top": 0, "right": canvas.width - 1, "bottom": canvas.height - 1, "left": 0 };
+
+  ctx.textBaseline = "bottom";
+  graphArea.bottom -= ctx.measureText("0").actualBoundingBoxAscent * 1.5;
+
+  // Draw y-axis labels
+  let left = [];
+  ctx.textBaseline = "top";
+  let label = (1000/fps*4).toPrecision(4);
+  ctx.fillText(label.toString(), 0, 0);
+  left.push(ctx.measureText(label).width);
+
+  ctx.textBaseline = "middle";
+  label = (1000/fps*3).toPrecision(4);
+  ctx.fillText(label, 0, graphArea.bottom / 4);
+  left.push(ctx.measureText(label).width);
+
+  label = (1000/fps*2).toPrecision(4);
+  ctx.fillText(label, 0, graphArea.bottom / 4 * 2);
+  left.push(ctx.measureText(label).width);
+
+  label = (1000/fps).toPrecision(4);
+  ctx.fillText(label, 0, graphArea.bottom / 4 * 3);
+  left.push(ctx.measureText(label).width);
+
+  graphArea.left = Math.max.apply(this, left) * 1.5;
+
+  // Draw x-axis labels
+  ctx.textBaseline = "bottom";
+  ctx.fillText("10", graphArea.left, canvas.height - 1);
+
+  ctx.textAlign = "center";
+  for (let i = 1; i <= 9; ++i)
+    ctx.fillText(10 - i, graphArea.left + (graphArea.right - graphArea.left) / 10 * i, canvas.height - 1);
+  ctx.textAlign = "right";
+  ctx.fillText("0", canvas.width, canvas.height - 1);
+
+  // Draw outline
+  ctx.strokeStyle = "rgba(0, 0, 0, 0.2)";
+  let graphWidth = graphArea.right - graphArea.left;
+  let graphHeight = graphArea.bottom - graphArea.top;
+  ctx.strokeRect(graphArea.left, graphArea.top, graphWidth, graphHeight);
+
+  // Draw axes
+  ctx.strokeStlye = "black";
+  ctx.lineWidth = 2;
+  ctx.setLineDash([]);
+  drawPolyLine([[graphArea.left, graphArea.top], [graphArea.left, graphArea.bottom], [graphArea.right, graphArea.bottom]]);
+
+  graphArea.bottom -= 2;
+  graphArea.left += 2;
+  graphArea.top += 1;
+  graphArea.right -= 1;
+}
+
+function updateStats()
+{
+  if (history.length < 2)
+    return;
+
+  let frameTimes = history.map((value, i) => history[i+1] ? history[i+1].frameTime - value.frameTime : null);
+  frameTimes.pop();
+
+  let avgFrametime = frameTimes.reduce((prev, cur) => prev + cur) / frameTimes.length;
+  let lowFrametime = frameTimes.reduce((prev, cur) => Math.max(prev, cur));
+  let highFrametime = frameTimes.reduce((prev, cur) => Math.min(prev, cur));
+
+  frameTimes.sort((a, b) => a - b);
+  frameTimes.splice(0, Math.floor(frameTimes.length * 0.99));
+  let avgLowFrametime = frameTimes.reduce((prev, cur) => prev + cur) / frameTimes.length;
+
+  avgLabel.textContent = avgFrametime.toPrecision(4) + "ms (" + (1000/avgFrametime).toPrecision(4) + "fps)";
+  lowLabel.textContent = lowFrametime.toPrecision(4) + "ms (" + (1000/lowFrametime).toPrecision(4) + "fps)";
+  highLabel.textContent = highFrametime.toPrecision(4) + "ms (" + (1000/highFrametime).toPrecision(4) + "fps)";
+  avgLowLabel.textContent = avgLowFrametime.toPrecision(4) + "ms (" + (1000/avgLowFrametime).toPrecision(4) + "fps)";
+}
+
+function drawHistory()
+{
+  const graphWidth = graphArea.right - graphArea.left;
+  const graphHeight = graphArea.bottom - graphArea.top;
+
+  resetCtx();
+  ctx.beginPath();
+  ctx.moveTo(graphArea.left, graphArea.top);
+  ctx.lineTo(graphArea.right, graphArea.top);
+  ctx.lineTo(graphArea.right, graphArea.bottom);
+  ctx.lineTo(graphArea.left, graphArea.bottom);
+  ctx.save();
+  ctx.clip();
+
+  ctx.fillStyle = "white";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Draw dashed grid
+  ctx.setLineDash([10, 20]);
+  ctx.strokeStyle = "rgba(0, 0, 0, 0.2)";
+  // Y-axis lines
+  drawLines([[graphArea.left, graphHeight / 4, graphArea.right, graphHeight / 4],
+             [graphArea.left, graphHeight / 4 * 2, graphArea.right, graphHeight / 4 * 2],
+             [graphArea.left, graphHeight / 4 * 3, graphArea.right, graphHeight / 4 * 3]]);
+
+  // X-axis lines
+  ctx.beginPath();
+  for (let i = 1; i < 10; ++i) {
+    ctx.moveTo(graphArea.left + graphWidth / 10 * i, graphArea.bottom);
+    ctx.lineTo(graphArea.left + graphWidth / 10 * i, graphArea.top);
+  }
+  ctx.stroke();
+
+  // Draw data
+  if (history.length >= 2) {
+    ctx.setLineDash([]);
+
+    if (showFrameTime) {
+      ctx.strokeStyle = "red";
+      ctx.beginPath();
+      for (let i = 1; i < history.length; ++i) {
+        let frameTime = history[i].frameTime - history[i-1].frameTime;
+        let x = canvas.width / historyLength * (i + (historyLength - history.length - 1));
+        if (x > canvas.width)
+          break;
+        let y = canvas.height - ((frameTime / (1000/fps)) * canvas.height) / 4;
+        if (i == 1)
+          ctx.moveTo(x, y);
+        else
+          ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+
+    if (showFrameLatency) {
+      ctx.strokeStyle = "blue";
+      ctx.beginPath();
+      for (let i = 1; i < history.length; ++i) {
+        let frameTime = history[i].callbackTime - history[i-1].lastRequestTime;
+        let x = canvas.width / historyLength * (i + (historyLength - history.length - 1));
+        if (x > canvas.width)
+          break;
+        let y = canvas.height - ((frameTime / (1000/fps)) * canvas.height) / 4;
+        if (i == 1)
+          ctx.moveTo(x, y);
+        else
+          ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+
+    if (showTimestampDelay) {
+      ctx.strokeStyle = "green";
+      ctx.beginPath();
+      for (let i = 1; i < history.length; ++i) {
+        let frameTime = history[i].callbackTime - history[i].frameTime;
+        let x = canvas.width / historyLength * (i + (historyLength - history.length - 1));
+        if (x > canvas.width)
+          break;
+        let y = canvas.height - ((frameTime / (1000/fps)) * canvas.height) / 4;
+        if (i == 1)
+          ctx.moveTo(x, y);
+        else
+          ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+  }
+
+  ctx.restore();
+}
+
+let redrawId = 0;
+let lastRequestTime = 0;
+
+function drawFrame(timestamp) {
+  redrawId = 0;
+  let start = performance.now();
+
+  history.push({ "frameTime" : timestamp,
+                 "lastRequestTime": lastRequestTime,
+                 "callbackTime": start });
+  while (history.length >= historyLength)
+    history.shift();
+
+  if (recording) {
+    if (history.length == historyLength - 1) {
+      recordButton.textContent = "Record";
+      playPauseButton.textContent = "Play";
+      playPauseButton.classList.remove("disabled");
+      recordButton.classList.remove("disabled");
+      delayInput.classList.remove("disabled");
+      drawHistory();
+      updateStats();
+      console.log("Finished recording 6000-frame sample with " + delayInput.value + "ms delay:", history);
+      recording = false;
+      return;
+    }
+  } else {
+    if (throttle >= 0)
+      throttle = (throttle + 1) % fps;
+
+    if (throttle <= 0) {
+      drawHistory();
+      if (liveUpdate)
+        updateStats();
+    }
+  }
+
+  if (delay) do { } while (performance.now() - start < delay);
+
+  scheduleRedraw();
+}
+
+function scheduleRedraw() {
+  if (!redrawId) {
+    lastRequestTime = performance.now();
+    redrawId = requestAnimationFrame(drawFrame);
+  }
+}
+
+function playPause() {
+  if (firstRun) {
+    firstRun = false;
+    alert("Note: Live result reporting can affect results");
+  }
+
+  if (redrawId) {
+    cancelAnimationFrame(redrawId);
+    redrawId = 0;
+    playPauseButton.textContent = "Play";
+    updateStats();
+  } else {
+    scheduleRedraw();
+    playPauseButton.textContent = "Pause";
+  }
+}
+
+function record() {
+  if (recording)
+    return;
+
+  recording = true;
+  playPauseButton.classList.add("disabled");
+  recordButton.classList.add("disabled");
+  delayInput.classList.add("disabled");
+  recordButton.textContent = "Recording...";
+  history = [];
+
+  if (!redrawId)
+    scheduleRedraw();
+}
+
+
+let resizeTimeout = 0;
+window.onresize = () => {
+  clearTimeout(resizeTimeout);
+  resizeTimeout = setTimeout(() => {
+    if ((canvas.width != canvas.offsetWidth || canvas.height != canvas.offsetHeight)) {
+      canvas.width = canvas.offsetWidth;
+      canvas.height = canvas.offsetHeight;
+
+      drawChrome();
+      if (!redrawId)
+        drawHistory();
+    }
+  }, 100);
+};
+
+window.onresize();
+</script>

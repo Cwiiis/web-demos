@@ -1,0 +1,333 @@
+<style>
+html {
+  height: 100%;
+}
+
+body {
+  margin: 5em;
+  height: calc(100% - 10em);
+}
+
+#canvas {
+  width: 100%;
+  height: 100%;
+}
+
+#controls {
+  position: absolute;
+  top: 0;
+  right: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  color: white;
+  text-align: left;
+  margin: 1.5em;
+  padding: 1em;
+  border-radius: 0.5em;
+}
+
+#hide-controls {
+  position: absolute;
+  top: 0;
+  right: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+#extra-controls.hidden {
+  display: none;
+}
+
+#extra-controls table {
+  color: inherit;
+  padding-bottom: 1em;
+}
+
+#zoom-input {
+  -webkit-appearance: slider-vertical;
+  position: absolute;
+  right: 2em;
+  bottom: 6em;
+  width: 1.5em;
+  height: 60%;
+}
+
+#scroll-input {
+  position: absolute;
+  bottom: 2em;
+  right: 6em;
+  width: 80%;
+  transition: opacity 0.2s ease-out;
+}
+
+#scroll-input.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+</style>
+
+<canvas id="canvas"></canvas>
+<div id="controls">
+  <button id="hide-controls" onclick="toggleControls()">+</button>
+  <div id="extra-controls" class="hidden">
+    <table>
+      <tr><td>Match regex:</td><td><input type="text" id="match-regex" /></td></tr>
+      <tr><td>Strip regex:</td><td><input type="text" id="strip-regex" /></td></tr>
+      <tr><td>Delimiter:</td><td><input type="text" id="delimiter" minlength="1" maxlength="1" size="1" value=" " /></td></tr>
+      <tr><td>Relative timestamps:</td><td><input type="checkbox" id="relative-input" onchange="redraw()" /></td>
+    </table>
+  </div>
+  <input type="file" id="file-input" onchange="load()" />
+  <button onclick="load()" id="reload-button">Reload</button>
+</div>
+<input id="zoom-input" type="range" min="1" max="100" value="1" step="0.5" orient="vertical" oninput="redraw()" />
+<input id="scroll-input" type="range" min="0" max="1" value="0" step="0.0001" oninput="redraw()" class="hidden" />
+
+<script>
+const canvas = document.querySelector("canvas");
+const hideButton = document.querySelector("#hide-controls");
+const extraControls = document.querySelector("#extra-controls");
+const matchRegexInput = document.querySelector("#match-regex");
+const stripRegexInput = document.querySelector("#strip-regex");
+const delimiterInput = document.querySelector("#delimiter");
+const fileInput = document.querySelector("#file-input");
+const zoomInput = document.querySelector("#zoom-input");
+const scrollInput = document.querySelector("#scroll-input");
+const relativeInput = document.querySelector("#relative-input");
+const ctx = canvas.getContext("2d");
+ctx.translate(0.5, 0.5);
+
+/* Let's define a format - data should look like:
+   [ { "name": "request",
+       "timestamps": [ { "start": 1, "end": 2 },
+                       { "start": 3 },
+                       ... ,
+                       { "start": 15, "end": 17 } ]
+     },
+     ...,
+     { "name": "vsync",
+       "timestamps": [ { "start": 2 },
+                       { "start": 4 },
+                       ... ,
+                       { "start": 17 } ]
+     } ]
+     
+   Yes, "end" is optional so data can be single points or a range.
+*/
+let data = [];
+let [begin, end] = [0, 0];
+
+function toggleControls()
+{
+  hideButton.textContent = extraControls.classList.toggle("hidden") ? "+" : "-";
+}
+
+function load()
+{
+  if (!fileInput.files.length)
+    return;
+    
+  data = [];
+
+  let matchRe = new RegExp(matchRegexInput.value);
+  let stripRe = new RegExp(stripRegexInput.value);
+  let delimiter = delimiterInput.value;
+  let reader = new FileReader();
+  reader.onload = () => {
+    let text = reader.result;
+    for (let line of text.split(/\r\n|\n/)) {
+      if (!line.length || !line.match(matchRe))
+        continue;
+      let datum = line.replace(stripRe, '').trim().split(delimiter);
+      if (datum.length < 2 || datum.length > 3) {
+        console.warn("Skipping bad datum: " + datum);
+        continue;
+      }
+      
+      let tag = datum.shift();
+      let isDelayedEnd = tag.endsWith("End") && datum.length == 1;
+      
+      let timestamp = { "start": parseFloat(datum.shift()) };
+      if (isDelayedEnd)
+        tag = tag.replace(/End$/, "");
+      else if (datum.length) {
+        timestamp["end"] = parseFloat(datum.shift());
+        if (timestamp.end == timestamp.start)
+          delete timestamp["end"];
+      }
+      
+      let trend = data.find(element => element.name == tag);
+      if (trend) {
+        if (isDelayedEnd) {
+          let point = trend.timestamps[trend.timestamps.length - 1];
+          if (point.start != timestamp.start)
+            point["end"] = timestamp.start;
+        } else
+          trend.timestamps.push(timestamp);
+      } else if (!isDelayedEnd)
+        data.push({"name": tag, "timestamps" : [ timestamp ]});
+      else
+        console.warn("Skipping delayed end for unencountered series");
+    }
+    
+    if (data.length) {
+      data.sort((a, b) => { return a.timestamps[0].start - b.timestamps[0].start; });
+      [begin, end] = [data[0].timestamps[0].start, 0];
+      for (let series of data)
+        [begin, end] = series.timestamps.reduce((prev, current) => [Math.min(prev[0], current.start), Math.max(prev[1], current.end ? current.end : current.start)], [begin, end]);
+      
+      redraw();
+    }
+  };
+  reader.readAsText(fileInput.files[0]);
+}
+
+function redraw()
+{
+  let zoom = zoomInput.valueAsNumber;
+  scrollInput.classList.toggle("hidden", zoom <= 1);
+  
+  if (!data.length)
+    return;
+  
+  ctx.fillStyle = "white";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "black";
+  let relative = relativeInput.checked;
+  
+  ctx.save();
+
+  let graphArea = { "top": 0, "right": canvas.width - 1, "bottom": canvas.height - 1, "left": 0 };
+  
+  ctx.font = "mono 2em";
+  
+  // Work out scrolled/scaled begin/end
+  let zoomWidth = (end - begin) / zoom;
+  let zoomBegin = begin + (((end - begin) - zoomWidth) * scrollInput.valueAsNumber);
+  let zoomEnd = zoomBegin + zoomWidth;
+
+  // Measure the y-axis labels
+  let maxYLabelWidth = data.reduce((prev, current) => Math.max(prev, ctx.measureText(current.name).width), 0);
+    
+  graphArea.left += maxYLabelWidth + 12;
+  let graphWidth = graphArea.right - graphArea.left;
+
+  // Measure the x-axis labels
+  lastXLabelWidth = ctx.measureText((zoomEnd - (relative ? zoomBegin : begin)).toFixed(1)).width;
+  let nXLabels = Math.floor(graphWidth / (lastXLabelWidth * 2 + 8));
+  let maxXLabelHeight = 0;
+  for (let i = 0; i < nXLabels; ++i) {
+    let label = (((zoomWidth / (nXLabels-1) * i) + zoomBegin) - (relative ? zoomBegin : begin)).toFixed(1);
+    let metrics = ctx.measureText(label);
+    maxXLabelHeight = Math.max(maxXLabelHeight, metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent);
+  }
+
+  graphArea.bottom -= maxXLabelHeight + 12;
+  let graphHeight = graphArea.bottom - graphArea.top;
+
+  // Draw the y-axis labels and mark ticks
+  ctx.textAlign = "right";
+  ctx.textBaseline = "middle";
+  ctx.beginPath();
+  for (let i = 0; i < data.length; ++i) {
+    let y = Math.round(graphHeight / data.length * (i + 0.5));
+    ctx.moveTo(graphArea.left + 0.5, y + 0.5);
+    ctx.lineTo((graphArea.left - 6) + 0.5, y + 0.5);
+    ctx.fillText(data[i].name, maxYLabelWidth, y);
+  }
+  
+  // Draw the x-axis labels and mark ticks
+  ctx.textBaseline = "top";
+  let lastLabel = null;
+  for (let i = 0; i < nXLabels; ++i) {
+    let label = (((zoomWidth / (nXLabels-1) * i) + zoomBegin) - (relative ? zoomBegin : begin)).toFixed(1);
+    if (label == lastLabel) continue;
+    lastLabel = label;
+    
+    if (i == 0) ctx.textAlign = "left";
+    else if (i == 1) ctx.textAlign = "center";
+    else if (i == nXLabels - 1) ctx.textAlign = "right";
+    
+    let x = Math.round(graphArea.left + (i * graphWidth / (nXLabels-1)));
+    ctx.moveTo(x + 0.5, graphArea.bottom + 0.5);
+    ctx.lineTo(x + 0.5, (graphArea.bottom + 6) + 0.5);
+    ctx.fillText(label, x, graphArea.bottom + 12);
+  }
+  
+  // Stroke axis ticks
+  ctx.stroke();
+  
+  // Draw guide lines
+  ctx.translate(0.5, 0.5);
+  ctx.strokeStyle = "rgba(0, 0, 0, 0.2)";
+  ctx.beginPath();
+  
+  for (let i = 0; i < nXLabels; i += Math.max(1, Math.floor(nXLabels / 5))) {
+    let x = Math.round(graphArea.left + (i * graphWidth / (nXLabels-1)));
+    ctx.moveTo(x, graphArea.bottom);
+    ctx.lineTo(x, graphArea.top);
+  }
+  
+  ctx.stroke();
+  
+  // Draw the axes
+  ctx.strokeStyle = "black";
+  ctx.beginPath();
+  ctx.moveTo(graphArea.left, graphArea.top);
+  ctx.lineTo(graphArea.left, graphArea.bottom);
+  ctx.lineTo(graphArea.right, graphArea.bottom);
+  ctx.stroke();
+  
+  // Clip draw data
+  ctx.beginPath();
+  ctx.rect(graphArea.left, graphArea.top, graphWidth, graphHeight);
+  ctx.clip();
+  
+  // Draw data
+  let palette = ["#d3d7cf", "#edd400", "#73d216", "#f57900", "#c17d11", "#3465a4", "#75507b", "#555753", "#cc0000"];
+  ctx.lineWidth = 2;
+  for (let i = 0; i < data.length; ++i) {
+    let series = data[i];
+    ctx.beginPath();
+    
+    let y = Math.round(graphHeight / data.length * (i + 0.5));
+    let height = Math.round((graphHeight / data.length) / 6) * 2;
+    for (let timestamp of series.timestamps) {
+      let x = Math.round(graphArea.left + ((timestamp.start - zoomBegin) / zoomWidth * graphWidth));
+      if (timestamp.end) {
+        let x2 = Math.round(graphArea.left + ((timestamp.end - zoomBegin) / zoomWidth * graphWidth));
+        ctx.rect(x, y - height / 2, x2 - x, height);
+      } else {
+        ctx.moveTo(x - 4, y);
+        ctx.lineTo(x, y - 4);
+        ctx.lineTo(x + 4, y);
+        ctx.lineTo(x, y + 4);
+        ctx.lineTo(x - 4, y);
+      }
+    }
+    
+    ctx.fillStyle = ctx.strokeStyle = palette.shift();
+    palette.push(ctx.strokeStyle);
+    ctx.globalAlpha = 0.5;
+    ctx.fill();
+    ctx.globalAlpha = 1.0;
+    ctx.stroke();
+  }
+  
+  ctx.lineWidth = 1;
+  ctx.restore();
+}
+
+let resizeTimeout = 0;
+window.onresize = () => {
+  clearTimeout(resizeTimeout);
+  resizeTimeout = setTimeout(() => {
+    if ((canvas.width != canvas.offsetWidth || canvas.height != canvas.offsetHeight)) {
+      canvas.width = canvas.offsetWidth;
+      canvas.height = canvas.offsetHeight;
+      redraw();
+    }
+  }, 100);
+};
+
+window.onresize();
+</script>
